@@ -7,10 +7,12 @@ using SmartTodo;
 public class TodosController : ControllerBase
 {
     private readonly TodoDbContext _context;
+    private readonly IAIService _aIService;
 
-    public TodosController(TodoDbContext context)
+    public TodosController(TodoDbContext context, IAIService aIService)
     {
         _context = context;
+        _aIService = aIService;
     }
 
     // GET: api/Todos
@@ -38,6 +40,9 @@ public class TodosController : ControllerBase
     [HttpPost]
     public async Task<ActionResult<Todo>> PostTodo(Todo todo)
     {
+        string category = await _aIService.CategorizeTodo(todo.Title, todo.Description);
+        todo.Category = category;
+
         _context.Todos.Add(todo);
         await _context.SaveChangesAsync();
 
@@ -52,6 +57,10 @@ public class TodosController : ControllerBase
         {
             return BadRequest();
         }
+
+        // Call the AI service to categorize the todo
+        string category = await _aIService.CategorizeTodo(todo.Title, todo.Description);
+        todo.Category = category; // Set the category
 
         _context.Entry(todo).State = EntityState.Modified;
 
