@@ -1,3 +1,4 @@
+using Microsoft.AspNetCore.Http.HttpResults;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using SmartTodo;
@@ -40,13 +41,17 @@ public class TodosController : ControllerBase
     [HttpPost]
     public async Task<ActionResult<Todo>> PostTodo(Todo todo)
     {
-        string category = await _aIService.CategorizeTodo(todo.Title, todo.Description);
+        string category = await _aIService.CategorizeTodo(todo);
         todo.Category = category;
-
-        _context.Todos.Add(todo);
-        await _context.SaveChangesAsync();
+        await Create(todo);
 
         return CreatedAtAction(nameof(GetTodo), new { id = todo.Id }, todo);
+    }
+
+    private async Task Create(Todo todo)
+    {
+        _context.Todos.Add(todo);
+        await _context.SaveChangesAsync();
     }
 
     // PUT: api/Todos/5
@@ -59,14 +64,12 @@ public class TodosController : ControllerBase
         }
 
         // Call the AI service to categorize the todo
-        string category = await _aIService.CategorizeTodo(todo.Title, todo.Description);
+        string category = await _aIService.CategorizeTodo(todo);
         todo.Category = category; // Set the category
-
-        _context.Entry(todo).State = EntityState.Modified;
 
         try
         {
-            await _context.SaveChangesAsync();
+            await Update(todo);
         }
         catch (DbUpdateConcurrencyException)
         {
@@ -80,7 +83,13 @@ public class TodosController : ControllerBase
             }
         }
 
-        return NoContent();
+        return Ok();
+    }
+
+    private async Task Update(Todo todo)
+    {
+        _context.Entry(todo).State = EntityState.Modified;
+        await _context.SaveChangesAsync();
     }
 
     // DELETE: api/Todos/5
@@ -99,8 +108,71 @@ public class TodosController : ControllerBase
         return NoContent();
     }
 
+    [HttpPost("process")]
+    public async Task<IActionResult> ProcessInstruction([FromBody] string instruction)
+    {
+        if (string.IsNullOrWhiteSpace(instruction))
+        {
+            return BadRequest("Instruction cannot be null or empty.");
+        }
+
+        var aiResponse = await _aIService.ProcessUserInstruction(instruction);
+
+        switch (aiResponse.Action)
+        {
+            case "create_todo":
+                await Create(aiResponse.Todo);
+                return Ok(new { summary = "Created todo", data = aiResponse.Todo });
+            case "update_todo":
+                if (!aiResponse.Id.HasValue)
+                {
+                    return BadRequest("Todo ID is required for updating.");
+                }
+                await Update(aiResponse.Todo);
+                if (aiResponse.Todo == null)
+                {
+                    return NotFound($"Todo with ID {aiResponse.Id.Value} not found.");
+                }
+                return Ok(new { summary = "Updated todo", data = aiResponse.Todo });
+            case "confirm_delete_todo":
+                if (!aiResponse.Id.HasValue)
+                {
+                    return BadRequest("Todo ID is required for deleting.");
+                }
+                return Ok(new { summary = aiResponse.Message, data = new { id = aiResponse.Id }, action = "confirm_delete_todo" }); // Return the confirmation message
+            case "delete_todo":
+                if (!aiResponse.Id.HasValue)
+                {
+                    return BadRequest("Todo ID is required for deleting.");
+                }
+                await DeleteTodo(aiResponse.Id.Value);
+                return Ok(new { summary = "Deleted todo", data = new { id = aiResponse.Id } });
+            case "show_todos":
+                var todos = await GetTodos();
+                return Ok(new { summary = "Showed all todos", data = todos });
+            case "count_todos_by_category":
+                var count = await CountTodosByCategory(aiResponse.Category);
+                return Ok(new { summary = $"Counted todos in category {aiResponse.Category}", data = new { category = aiResponse.Category, count } });
+            case "clarification_needed":
+                return Ok(new { summary = "Clarification needed", data = new { message = aiResponse.Message } });
+            case "what_can_you_do":
+                return Ok(new { summary = "Available actions", data = new { message = "I can help you manage your todo list. You can ask me to create, update, delete, show, and count your todos." } });
+            case "non_todo_related":
+                return Ok(new { summary = "Non-todo related", data = new { message = "I can only help with your todo list." } });
+            case "error":
+                return StatusCode(500, new { summary = "Error", data = new { message = aiResponse.Message } }); // Return 500 for internal server error
+            default:
+                return BadRequest("Invalid action.");
+        }
+    }
+
     private bool TodoExists(int id)
     {
         return _context.Todos.Any(e => e.Id == id);
+    }
+
+    private Task<int> CountTodosByCategory(string category)
+    {
+        return _context.Todos.CountAsync(e => e.Category == category);
     }
 }
